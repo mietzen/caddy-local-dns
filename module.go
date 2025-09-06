@@ -1,313 +1,262 @@
-package opnsense
+package localdns
 
 import (
-	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/mietzen/caddy-localdns/localdns_provider"
 	"go.uber.org/zap"
 )
 
-// Module registration
 func init() {
-	caddy.RegisterModule(Module{})
+	caddy.RegisterModule(App{})
+	caddy.RegisterModule(Handler{})
 }
 
-// Module config
-type Module struct {
-	Hostname  string `json:"hostname,omitempty"`
-	APIKey    string `json:"api_key,omitempty"`
-	APISecret string `json:"api_secret,omitempty"`
-	IP        string `json:"ip,omitempty"`
-	Insecure  bool   `json:"insecure,omitempty"`
+// App is the global app that manages DNS providers
+type App struct {
+	Providers map[string]*ProviderConfig `json:"providers,omitempty"`
 
-	client  *http.Client
-	baseURL string
 	logger  *zap.Logger
+	clients map[string]localdns_provider.DNSProvider
 }
 
-// CaddyModule returns the module information.
-func (Module) CaddyModule() caddy.ModuleInfo {
+// ProviderConfig holds the configuration for a DNS provider
+type ProviderConfig struct {
+	Type        string `json:"type"` // "opnsense", "pihole", etc.
+	Hostname    string `json:"hostname,omitempty"`
+	APIKey      string `json:"api_key,omitempty"`
+	APISecret   string `json:"api_secret,omitempty"`
+	DNSProvider string `json:"localdns_provider,omitempty"` // "unbound", "dnsmasq", etc.
+	Insecure    bool   `json:"insecure,omitempty"`
+}
+
+// Handler is the HTTP handler that processes individual site configurations
+type Handler struct {
+	Provider   string `json:"provider,omitempty"`
+	IPOverride string `json:"ip_override,omitempty"`
+
+	logger *zap.Logger
+	app    *App
+}
+
+// App methods
+func (App) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "opnsense",
-		New: func() caddy.Module { return new(Module) },
+		ID:  "local_dns",
+		New: func() caddy.Module { return new(App) },
 	}
 }
 
-// Provision sets up the module.
-func (m *Module) Provision(ctx caddy.Context) error {
-	m.logger = ctx.Logger(m)
+func (a *App) Provision(ctx caddy.Context) error {
+	a.logger = ctx.Logger(a)
+	a.clients = make(map[string]localdns_provider.DNSProvider)
 
-	if m.Hostname == "" || m.APIKey == "" || m.APISecret == "" || m.IP == "" {
-		return errors.New("opnsense: missing required config (hostname, api_key, api_secret, ip)")
-	}
-
-	// IP validation + record type
-	parsedIP := net.ParseIP(m.IP)
-	if parsedIP == nil {
-		return fmt.Errorf("opnsense: invalid IP address: %s", m.IP)
-	}
-
-	// domain validation will happen later in HandleDomain
-
-	// http client
-	tr := &http.Transport{}
-	if m.Insecure {
-		tr.TLSClientConfig = &tls.Config{
-			InsecureSkipVerify: true,
+	// Initialize providers
+	for name, config := range a.Providers {
+		client, err := a.createProvider(config)
+		if err != nil {
+			return fmt.Errorf("failed to create provider %s: %w", name, err)
 		}
+		a.clients[name] = client
+		a.logger.Info("initialized DNS provider", zap.String("name", name), zap.String("type", config.Type))
 	}
-	m.client = &http.Client{
-		Timeout:   15 * time.Second,
-		Transport: tr,
-	}
-	m.baseURL = fmt.Sprintf("https://%s/api/unbound", m.Hostname)
 
 	return nil
 }
 
-// HandleDomain is called for each domain where a cert is obtained.
-func (m *Module) HandleDomain(domain string) error {
-	// validate domain has a dot
-	if !strings.Contains(domain, ".") {
-		return fmt.Errorf("opnsense: domain must contain a dot: %s", domain)
+func (a *App) Start() error {
+	return nil
+}
+
+func (a *App) Stop() error {
+	return nil
+}
+
+func (a *App) createProvider(config *ProviderConfig) (localdns_provider.DNSProvider, error) {
+	switch config.Type {
+	case "opnsense":
+		return localdns_provider.NewOPNsenseProvider(config.Hostname, config.APIKey, config.APISecret, config.DNSProvider, config.Insecure, a.logger)
+	default:
+		return nil, fmt.Errorf("unsupported provider type: %s", config.Type)
 	}
+}
 
-	// detect record type
-	recordType := "A"
-	if ip := net.ParseIP(m.IP); ip != nil && ip.To4() == nil {
-		recordType = "AAAA"
+// Handler methods
+func (Handler) CaddyModule() caddy.ModuleInfo {
+	return caddy.ModuleInfo{
+		ID:  "http.handlers.local_dns",
+		New: func() caddy.Module { return new(Handler) },
 	}
+}
 
-	host := domain[:strings.IndexByte(domain, '.')]
-	zone := domain[strings.IndexByte(domain, '.')+1:]
+func (h *Handler) Provision(ctx caddy.Context) error {
+	h.logger = ctx.Logger(h)
 
-	m.logger.Info("managing host override",
-		zap.String("host", host),
-		zap.String("domain", zone),
-		zap.String("ip", m.IP),
-		zap.String("rr", recordType))
-
-	existing, err := m.findOverride(host, zone)
+	// Get the app instance
+	appIface, err := ctx.App("local_dns")
 	if err != nil {
-		return err
+		return fmt.Errorf("local_dns app not configured")
+	}
+	h.app = appIface.(*App)
+
+	if h.Provider == "" {
+		return errors.New("provider name is required")
+	}
+
+	if _, exists := h.app.clients[h.Provider]; !exists {
+		return fmt.Errorf("provider %s not found in global configuration", h.Provider)
+	}
+
+	return nil
+}
+
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	// Get the domain from the request
+	domain := r.Host
+
+	// Remove port if present
+	if colonIndex := strings.LastIndex(domain, ":"); colonIndex != -1 {
+		domain = domain[:colonIndex]
+	}
+
+	// Handle the DNS record
+	if err := h.handleDomain(domain); err != nil {
+		h.logger.Error("failed to handle domain", zap.String("domain", domain), zap.Error(err))
+		// Don't fail the request, just log the error
+	}
+
+	return next.ServeHTTP(w, r)
+}
+
+func (h *Handler) handleDomain(domain string) error {
+	provider, exists := h.app.clients[h.Provider]
+	if !exists {
+		return fmt.Errorf("provider %s not found", h.Provider)
+	}
+
+	// Use IP override if specified, otherwise try to detect
+	ip := h.IPOverride
+	if ip == "" {
+		// Could implement auto-detection logic here
+		return errors.New("ip_override is required when no default IP is configured")
+	}
+
+	// Validate IP
+	if net.ParseIP(ip) == nil {
+		return fmt.Errorf("invalid IP address: %s", ip)
+	}
+
+	h.logger.Info("handling domain",
+		zap.String("domain", domain),
+		zap.String("ip", ip),
+		zap.String("provider", h.Provider))
+
+	// Check if record exists
+	existing, err := provider.FindRecord(domain)
+	if err != nil {
+		return fmt.Errorf("failed to find existing record: %w", err)
 	}
 
 	if existing != nil {
-		// normalize rr (cut -f1 -d' ')
-		existing.RR = strings.SplitN(strings.TrimSpace(existing.RR), " ", 2)[0]
-
-		identical := existing.Enabled == "1" &&
-			existing.Server == m.IP &&
-			existing.Description == "Generated by Caddy" &&
-			existing.RR == recordType &&
-			existing.MXPrio == "" &&
-			existing.MX == ""
-
-		if identical {
-			m.logger.Info("host override already exists and is identical",
-				zap.String("domain", domain))
+		// Check if update is needed
+		if existing.IP == ip && existing.Enabled {
+			h.logger.Info("DNS record already exists and is correct", zap.String("domain", domain))
 			return nil
 		}
 
-		// log details only at debug level
-		m.logger.Debug("host override differs",
-			zap.String("domain", domain),
-			zap.String("current_enabled", existing.Enabled),
-			zap.String("current_server", existing.Server),
-			zap.String("current_desc", existing.Description),
-			zap.String("current_rr", existing.RR),
-			zap.String("current_mxprio", existing.MXPrio),
-			zap.String("current_mx", existing.MX),
-			zap.String("desired_ip", m.IP),
-			zap.String("desired_rr", recordType),
-			zap.String("desired_desc", "Generated by Caddy"))
-
-		m.logger.Info("deleting old host override", zap.String("domain", domain))
-		if err := m.deleteOverride(existing.UUID); err != nil {
-			return err
-		}
+		// Update existing record
+		h.logger.Info("updating existing DNS record", zap.String("domain", domain))
+		return provider.UpdateRecord(domain, ip)
 	}
 
-	// create new override
-	if err := m.addOverride(host, zone, recordType, m.IP); err != nil {
-		return err
-	}
-	m.logger.Info("host override created", zap.String("domain", domain))
-
-	// reload config
-	if err := m.reconfigure(); err != nil {
-		return err
-	}
-	m.logger.Info("config reloaded successfully")
-
-	return nil
+	// Create new record
+	h.logger.Info("creating new DNS record", zap.String("domain", domain))
+	return provider.CreateRecord(domain, ip)
 }
 
-// API structs
-type override struct {
-	UUID        string `json:"uuid"`
-	Enabled     string `json:"enabled"`
-	Hostname    string `json:"hostname"`
-	Domain      string `json:"domain"`
-	RR          string `json:"rr"`
-	MXPrio      string `json:"mxprio"`
-	MX          string `json:"mx"`
-	Server      string `json:"server"`
-	Description string `json:"description"`
-}
+// Caddyfile unmarshaling for App (global config)
+func (a *App) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	a.Providers = make(map[string]*ProviderConfig)
 
-func (m *Module) findOverride(host, domain string) (*override, error) {
-	resp, err := m.apiCall("settings/search_host_override", nil)
-	if err != nil {
-		return nil, err
-	}
-	var data struct {
-		Rows []override `json:"rows"`
-	}
-	if err := json.Unmarshal(resp, &data); err != nil {
-		return nil, err
-	}
-	for _, row := range data.Rows {
-		if row.Hostname == host && row.Domain == domain {
-			return &row, nil
-		}
-	}
-	return nil, nil
-}
-
-func (m *Module) addOverride(host, domain, rr, ip string) error {
-	payload := map[string]any{
-		"host": map[string]any{
-			"enabled":     "1",
-			"hostname":    host,
-			"domain":      domain,
-			"rr":          rr,
-			"mxprio":      "",
-			"mx":          "",
-			"server":      ip,
-			"description": "Generated by Caddy",
-		},
-	}
-	resp, err := m.apiCall("settings/add_host_override", payload)
-	if err != nil {
-		return err
-	}
-	var res struct {
-		Result string `json:"result"`
-	}
-	if err := json.Unmarshal(resp, &res); err != nil {
-		return err
-	}
-	if res.Result != "saved" {
-		return fmt.Errorf("opnsense: add_override failed: %s", string(resp))
-	}
-	return nil
-}
-
-func (m *Module) deleteOverride(uuid string) error {
-	resp, err := m.apiCall("settings/del_host_override/"+uuid, nil)
-	if err != nil {
-		return err
-	}
-	var res struct {
-		Result string `json:"result"`
-	}
-	if err := json.Unmarshal(resp, &res); err != nil {
-		return err
-	}
-	if res.Result != "deleted" {
-		return fmt.Errorf("opnsense: delete_override failed: %s", string(resp))
-	}
-	return nil
-}
-
-func (m *Module) reconfigure() error {
-	resp, err := m.apiCall("service/reconfigure", nil)
-	if err != nil {
-		return err
-	}
-	var res struct {
-		Status string `json:"status"`
-	}
-	if err := json.Unmarshal(resp, &res); err != nil {
-		return err
-	}
-	if res.Status != "ok" {
-		return fmt.Errorf("opnsense: reconfigure failed: %s", string(resp))
-	}
-	return nil
-}
-
-// API call helper
-func (m *Module) apiCall(endpoint string, payload any) ([]byte, error) {
-	url := fmt.Sprintf("%s/%s", m.baseURL, endpoint)
-	var body io.Reader
-	if payload != nil {
-		data, _ := json.Marshal(payload)
-		body = strings.NewReader(string(data))
-	}
-	req, err := http.NewRequest("POST", url, body)
-	if err != nil {
-		return nil, err
-	}
-	req.SetBasicAuth(m.APIKey, m.APISecret)
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := m.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	out, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("opnsense: api error %d: %s", resp.StatusCode, string(out))
-	}
-	return out, nil
-}
-
-// UnmarshalCaddyfile sets up config from Caddyfile.
-func (m *Module) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		for nesting := d.Nesting(); d.NextBlock(nesting); {
 			switch d.Val() {
-			case "hostname":
-				if !d.AllArgs(&m.Hostname) {
+			case "provider":
+				if !d.NextArg() {
 					return d.ArgErr()
 				}
-			case "api_key":
-				if !d.AllArgs(&m.APIKey) {
+				providerName := d.Val()
+
+				config := &ProviderConfig{}
+				if !d.NextArg() {
 					return d.ArgErr()
 				}
-			case "api_secret":
-				if !d.AllArgs(&m.APISecret) {
-					return d.ArgErr()
+				config.Type = d.Val()
+
+				// Parse provider block
+				for nesting := d.Nesting(); d.NextBlock(nesting); {
+					switch d.Val() {
+					case "hostname":
+						if !d.AllArgs(&config.Hostname) {
+							return d.ArgErr()
+						}
+					case "api_key":
+						if !d.AllArgs(&config.APIKey) {
+							return d.ArgErr()
+						}
+					case "api_secret":
+						if !d.AllArgs(&config.APISecret) {
+							return d.ArgErr()
+						}
+					case "localdns_provider":
+						if !d.AllArgs(&config.DNSProvider) {
+							return d.ArgErr()
+						}
+					case "insecure":
+						config.Insecure = true
+					}
 				}
-			case "ip":
-				if !d.AllArgs(&m.IP) {
-					return d.ArgErr()
-				}
-			case "insecure":
-				m.Insecure = true
+
+				a.Providers[providerName] = config
 			}
 		}
 	}
 	return nil
 }
 
+// Caddyfile unmarshaling for Handler (site-specific config)
+func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	for d.Next() {
+		if d.NextArg() {
+			h.Provider = d.Val()
+		}
+
+		for nesting := d.Nesting(); d.NextBlock(nesting); {
+			switch d.Val() {
+			case "ip_override":
+				if !d.AllArgs(&h.IPOverride) {
+					return d.ArgErr()
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// Interface compliance
 var (
-	_ caddy.Provisioner     = (*Module)(nil)
-	_ caddyfile.Unmarshaler = (*Module)(nil)
+	_ caddy.App                   = (*App)(nil)
+	_ caddy.Provisioner           = (*App)(nil)
+	_ caddyfile.Unmarshaler       = (*App)(nil)
+	_ caddy.Module                = (*Handler)(nil)
+	_ caddy.Provisioner           = (*Handler)(nil)
+	_ caddyfile.Unmarshaler       = (*Handler)(nil)
+	_ caddyhttp.MiddlewareHandler = (*Handler)(nil)
 )
