@@ -32,3 +32,5 @@ go.work.sum
 # .vscode/
 buildenv_*
 caddy
+Caddyfile
+.DS_Store

@@ -27,10 +27,11 @@ Configure DNS providers in the global block:
             hostname opnsense.local
             api_key your_api_key_here
             api_secret your_api_secret_here
-            dns_provider unbound # or dnsmasq
+            localdns_provider unbound # or dnsmasq
             insecure  # optional, for self-signed certs
         }
-        caddy_ip 192.168.1.50
+        caddy_ip 192.168.1.50 # IP of the Host running Caddy
+        debug  # optional, enable debug logging
     }
 }
 ```
