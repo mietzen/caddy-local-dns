@@ -1,4 +1,4 @@
-package localdns_provider
+package provider
 
 import (
 	"crypto/tls"

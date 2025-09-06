@@ -1,4 +1,4 @@
-module github.com/mietzen/caddy-localdns
+module github.com/mietzen/caddy-local-dns
 
 go 1.25.1
 

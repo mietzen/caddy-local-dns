@@ -1,4 +1,4 @@
-package localdns
+package local_dns
 
 import (
 	"errors"
@@ -10,7 +10,7 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
-	"github.com/mietzen/caddy-localdns/localdns_provider"
+	"github.com/mietzen/caddy-local-dns/provider"
 	"go.uber.org/zap"
 )
 
@@ -24,7 +24,7 @@ type App struct {
 	Providers map[string]*ProviderConfig `json:"providers,omitempty"`
 
 	logger  *zap.Logger
-	clients map[string]localdns_provider.DNSProvider
+	clients map[string]provider.DNSProvider
 }
 
 // ProviderConfig holds the configuration for a DNS provider
@@ -56,7 +56,7 @@ func (App) CaddyModule() caddy.ModuleInfo {
 
 func (a *App) Provision(ctx caddy.Context) error {
 	a.logger = ctx.Logger(a)
-	a.clients = make(map[string]localdns_provider.DNSProvider)
+	a.clients = make(map[string]provider.DNSProvider)
 
 	// Initialize providers
 	for name, config := range a.Providers {
@@ -79,10 +79,10 @@ func (a *App) Stop() error {
 	return nil
 }
 
-func (a *App) createProvider(config *ProviderConfig) (localdns_provider.DNSProvider, error) {
+func (a *App) createProvider(config *ProviderConfig) (provider.DNSProvider, error) {
 	switch config.Type {
 	case "opnsense":
-		return localdns_provider.NewOPNsenseProvider(config.Hostname, config.APIKey, config.APISecret, config.DNSProvider, config.Insecure, a.logger)
+		return provider.NewOPNsenseProvider(config.Hostname, config.APIKey, config.APISecret, config.DNSProvider, config.Insecure, a.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider type: %s", config.Type)
 	}
