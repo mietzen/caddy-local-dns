@@ -30,6 +30,7 @@ Configure DNS providers in the global block:
             dns_provider unbound # or dnsmasq
             insecure  # optional, for self-signed certs
         }
+        caddy_ip 192.168.1.50
     }
 }
 ```
@@ -41,16 +42,12 @@ Use the provider in your site blocks:
 ```caddyfile
 service.example.com {
     reverse_proxy localhost:8080
-    local_dns opnsense {
-        ip_override 192.168.1.50
-    }
+    local_dns opnsense
 }
 
 api.example.com {
     reverse_proxy localhost:3000
-    local_dns opnsense {
-        ip_override 192.168.1.51
-    }
+    local_dns opnsense
 }
 ```
 

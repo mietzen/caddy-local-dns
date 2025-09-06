@@ -22,6 +22,7 @@ func init() {
 // App is the global app that manages DNS providers
 type App struct {
 	Providers map[string]*ProviderConfig `json:"providers,omitempty"`
+	CaddyIP   string                     `json:"caddy_ip,omitempty"`
 
 	logger  *zap.Logger
 	clients map[string]provider.DNSProvider
@@ -57,6 +58,13 @@ func (App) CaddyModule() caddy.ModuleInfo {
 func (a *App) Provision(ctx caddy.Context) error {
 	a.logger = ctx.Logger(a)
 	a.clients = make(map[string]provider.DNSProvider)
+
+	// Validate global caddy_ip if provided
+	if a.CaddyIP != "" {
+		if net.ParseIP(a.CaddyIP) == nil {
+			return fmt.Errorf("invalid caddy_ip address: %s", a.CaddyIP)
+		}
+	}
 
 	// Initialize providers
 	for name, config := range a.Providers {
@@ -141,11 +149,14 @@ func (h *Handler) handleDomain(domain string) error {
 		return fmt.Errorf("provider %s not found", h.Provider)
 	}
 
-	// Use IP override if specified, otherwise try to detect
+	// Determine IP to use: ip_override takes precedence, then fall back to global caddy_ip
 	ip := h.IPOverride
 	if ip == "" {
-		// Could implement auto-detection logic here
-		return errors.New("ip_override is required when no default IP is configured")
+		ip = h.app.CaddyIP
+	}
+
+	if ip == "" {
+		return errors.New("no IP address configured: set either ip_override in handler or caddy_ip in global config")
 	}
 
 	// Validate IP
@@ -225,6 +236,10 @@ func (a *App) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 
 				a.Providers[providerName] = config
+			case "caddy_ip":
+				if !d.AllArgs(&a.CaddyIP) {
+					return d.ArgErr()
+				}
 			}
 		}
 	}
@@ -237,15 +252,7 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 		if d.NextArg() {
 			h.Provider = d.Val()
 		}
-
-		for nesting := d.Nesting(); d.NextBlock(nesting); {
-			switch d.Val() {
-			case "ip_override":
-				if !d.AllArgs(&h.IPOverride) {
-					return d.ArgErr()
-				}
-			}
-		}
+		// No block parsing needed since we removed caddy_ip from handler
 	}
 	return nil
 }
