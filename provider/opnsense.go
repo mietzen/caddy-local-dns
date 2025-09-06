@@ -43,7 +43,7 @@ type OPNsenseProvider struct {
 	debug      bool
 }
 
-type opnsenseOverride struct {
+type unboundOverride struct {
 	UUID        string `json:"uuid"`
 	Enabled     string `json:"enabled"`
 	Hostname    string `json:"hostname"`
@@ -345,7 +345,7 @@ func (p *OPNsenseProvider) findUnboundRecord(domain string) (*DNSRecord, error) 
 	}
 
 	var data struct {
-		Rows []opnsenseOverride `json:"rows"`
+		Rows []unboundOverride `json:"rows"`
 	}
 	if err := json.Unmarshal(resp, &data); err != nil {
 		return nil, err
