@@ -23,6 +23,7 @@ func init() {
 type App struct {
 	Providers map[string]*ProviderConfig `json:"providers,omitempty"`
 	CaddyIP   string                     `json:"caddy_ip,omitempty"`
+	Debug     bool                       `json:"debug,omitempty"`
 
 	logger  *zap.Logger
 	clients map[string]provider.DNSProvider
@@ -73,7 +74,20 @@ func (a *App) Provision(ctx caddy.Context) error {
 			return fmt.Errorf("failed to create provider %s: %w", name, err)
 		}
 		a.clients[name] = client
-		a.logger.Info("initialized DNS provider", zap.String("name", name), zap.String("type", config.Type))
+
+		logMsg := "initialized DNS provider"
+		fields := []zap.Field{
+			zap.String("name", name),
+			zap.String("type", config.Type),
+		}
+		if a.Debug {
+			fields = append(fields,
+				zap.String("hostname", config.Hostname),
+				zap.String("dns_provider", config.DNSProvider),
+				zap.Bool("insecure", config.Insecure),
+			)
+		}
+		a.logger.Info(logMsg, fields...)
 	}
 
 	return nil
@@ -90,7 +104,7 @@ func (a *App) Stop() error {
 func (a *App) createProvider(config *ProviderConfig) (provider.DNSProvider, error) {
 	switch config.Type {
 	case "opnsense":
-		return provider.NewOPNsenseProvider(config.Hostname, config.APIKey, config.APISecret, config.DNSProvider, config.Insecure, a.logger)
+		return provider.NewOPNsenseProvider(config.Hostname, config.APIKey, config.APISecret, config.DNSProvider, config.Insecure, a.logger, a.Debug)
 	default:
 		return nil, fmt.Errorf("unsupported provider type: %s", config.Type)
 	}
@@ -240,6 +254,8 @@ func (a *App) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if !d.AllArgs(&a.CaddyIP) {
 					return d.ArgErr()
 				}
+			case "debug":
+				a.Debug = true
 			}
 		}
 	}

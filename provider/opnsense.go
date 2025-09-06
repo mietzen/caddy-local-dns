@@ -40,6 +40,7 @@ type OPNsenseProvider struct {
 	dnsProvider string
 	client      *http.Client
 	logger      *zap.Logger
+	debug       bool
 }
 
 type opnsenseOverride struct {
@@ -64,7 +65,7 @@ type dnsmasqHost struct {
 }
 
 // NewOPNsenseProvider creates a new OPNsense provider
-func NewOPNsenseProvider(hostname, apiKey, apiSecret, dnsProvider string, insecure bool, logger *zap.Logger) (*OPNsenseProvider, error) {
+func NewOPNsenseProvider(hostname, apiKey, apiSecret, dnsProvider string, insecure bool, logger *zap.Logger, debug bool) (*OPNsenseProvider, error) {
 	if hostname == "" || apiKey == "" || apiSecret == "" {
 		return nil, errors.New("opnsense provider requires hostname, api_key, and api_secret")
 	}
@@ -84,11 +85,21 @@ func NewOPNsenseProvider(hostname, apiKey, apiSecret, dnsProvider string, insecu
 		tr.TLSClientConfig = &tls.Config{
 			InsecureSkipVerify: true,
 		}
+		if debug {
+			logger.Debug("OPNsense provider configured with insecure SSL", zap.String("hostname", hostname))
+		}
 	}
 
 	client := &http.Client{
 		Timeout:   15 * time.Second,
 		Transport: tr,
+	}
+
+	if debug {
+		logger.Debug("OPNsense provider created",
+			zap.String("hostname", hostname),
+			zap.String("dns_provider", dnsProvider),
+			zap.Bool("insecure", insecure))
 	}
 
 	return &OPNsenseProvider{
@@ -98,12 +109,20 @@ func NewOPNsenseProvider(hostname, apiKey, apiSecret, dnsProvider string, insecu
 		dnsProvider: dnsProvider,
 		client:      client,
 		logger:      logger,
+		debug:       debug,
 	}, nil
 }
 
 func (p *OPNsenseProvider) CreateRecord(domain, ip string) error {
 	if !strings.Contains(domain, ".") {
 		return fmt.Errorf("domain must contain a dot: %s", domain)
+	}
+
+	if p.debug {
+		p.logger.Debug("creating DNS record",
+			zap.String("domain", domain),
+			zap.String("ip", ip),
+			zap.String("provider_type", p.dnsProvider))
 	}
 
 	if p.dnsProvider == "dnsmasq" {
@@ -122,6 +141,14 @@ func (p *OPNsenseProvider) createUnboundRecord(domain, ip string) error {
 
 	host := domain[:strings.IndexByte(domain, '.')]
 	zone := domain[strings.IndexByte(domain, '.')+1:]
+
+	if p.debug {
+		p.logger.Debug("creating unbound record",
+			zap.String("host", host),
+			zap.String("zone", zone),
+			zap.String("record_type", recordType),
+			zap.String("ip", ip))
+	}
 
 	payload := map[string]any{
 		"host": map[string]any{
@@ -151,6 +178,10 @@ func (p *OPNsenseProvider) createUnboundRecord(domain, ip string) error {
 		return fmt.Errorf("add_override failed: %s", string(resp))
 	}
 
+	if p.debug {
+		p.logger.Debug("unbound record created successfully", zap.String("domain", domain))
+	}
+
 	// Reload config
 	return p.reconfigure()
 }
@@ -158,6 +189,13 @@ func (p *OPNsenseProvider) createUnboundRecord(domain, ip string) error {
 func (p *OPNsenseProvider) createDnsmasqRecord(domain, ip string) error {
 	host := domain[:strings.IndexByte(domain, '.')]
 	zone := domain[strings.IndexByte(domain, '.')+1:]
+
+	if p.debug {
+		p.logger.Debug("creating dnsmasq record",
+			zap.String("host", host),
+			zap.String("zone", zone),
+			zap.String("ip", ip))
+	}
 
 	payload := map[string]any{
 		"host": map[string]any{
@@ -183,18 +221,33 @@ func (p *OPNsenseProvider) createDnsmasqRecord(domain, ip string) error {
 		return fmt.Errorf("add_host failed: %s", string(resp))
 	}
 
+	if p.debug {
+		p.logger.Debug("dnsmasq record created successfully", zap.String("domain", domain))
+	}
+
 	// Reload config
 	return p.reconfigure()
 }
 
 func (p *OPNsenseProvider) UpdateRecord(domain, ip string) error {
+	if p.debug {
+		p.logger.Debug("updating DNS record", zap.String("domain", domain), zap.String("ip", ip))
+	}
+
 	// Find existing record
 	existing, err := p.FindRecord(domain)
 	if err != nil {
 		return err
 	}
 	if existing == nil {
+		p.logger.Info("record not found during update, creating new one", zap.String("domain", domain))
 		return p.CreateRecord(domain, ip)
+	}
+
+	if p.debug {
+		p.logger.Debug("deleting existing record before update",
+			zap.String("domain", domain),
+			zap.String("uuid", existing.UUID))
 	}
 
 	// Delete old record
@@ -207,12 +260,25 @@ func (p *OPNsenseProvider) UpdateRecord(domain, ip string) error {
 }
 
 func (p *OPNsenseProvider) DeleteRecord(domain string) error {
+	if p.debug {
+		p.logger.Debug("deleting DNS record", zap.String("domain", domain))
+	}
+
 	existing, err := p.FindRecord(domain)
 	if err != nil {
 		return err
 	}
 	if existing == nil {
+		if p.debug {
+			p.logger.Debug("record not found, nothing to delete", zap.String("domain", domain))
+		}
 		return nil // Already deleted
+	}
+
+	if p.debug {
+		p.logger.Debug("found record to delete",
+			zap.String("domain", domain),
+			zap.String("uuid", existing.UUID))
 	}
 
 	var endpoint string
@@ -237,12 +303,22 @@ func (p *OPNsenseProvider) DeleteRecord(domain string) error {
 		return fmt.Errorf("delete_record failed: %s", string(resp))
 	}
 
+	if p.debug {
+		p.logger.Debug("record deleted successfully", zap.String("domain", domain))
+	}
+
 	return p.reconfigure()
 }
 
 func (p *OPNsenseProvider) FindRecord(domain string) (*DNSRecord, error) {
 	if !strings.Contains(domain, ".") {
 		return nil, fmt.Errorf("domain must contain a dot: %s", domain)
+	}
+
+	if p.debug {
+		p.logger.Debug("searching for DNS record",
+			zap.String("domain", domain),
+			zap.String("provider_type", p.dnsProvider))
 	}
 
 	if p.dnsProvider == "dnsmasq" {
@@ -257,6 +333,12 @@ func (p *OPNsenseProvider) findUnboundRecord(domain string) (*DNSRecord, error) 
 	host := domain[:strings.IndexByte(domain, '.')]
 	zone := domain[strings.IndexByte(domain, '.')+1:]
 
+	if p.debug {
+		p.logger.Debug("searching unbound records",
+			zap.String("host", host),
+			zap.String("zone", zone))
+	}
+
 	resp, err := p.apiCall("unbound/settings/search_host_override", nil)
 	if err != nil {
 		return nil, err
@@ -269,12 +351,28 @@ func (p *OPNsenseProvider) findUnboundRecord(domain string) (*DNSRecord, error) 
 		return nil, err
 	}
 
+	if p.debug {
+		p.logger.Debug("found unbound records", zap.Int("count", len(data.Rows)))
+	}
+
 	for _, row := range data.Rows {
 		if row.Hostname == host && row.Domain == zone {
+			// Extract just the record type (e.g., "A" from "A (IPv4 Address)")
+			recordType := strings.SplitN(strings.TrimSpace(row.RR), " ", 2)[0]
+
+			if p.debug {
+				p.logger.Debug("found matching unbound record",
+					zap.String("domain", domain),
+					zap.String("uuid", row.UUID),
+					zap.String("ip", row.Server),
+					zap.String("enabled", row.Enabled),
+					zap.String("raw_rr", row.RR),
+					zap.String("parsed_record_type", recordType))
+			}
 			return &DNSRecord{
 				Domain:      domain,
 				IP:          row.Server,
-				RecordType:  strings.SplitN(strings.TrimSpace(row.RR), " ", 2)[0],
+				RecordType:  recordType,
 				UUID:        row.UUID,
 				Enabled:     row.Enabled == "1",
 				Description: row.Description,
@@ -282,12 +380,21 @@ func (p *OPNsenseProvider) findUnboundRecord(domain string) (*DNSRecord, error) 
 		}
 	}
 
+	if p.debug {
+		p.logger.Debug("no matching unbound record found", zap.String("domain", domain))
+	}
 	return nil, nil
 }
 
 func (p *OPNsenseProvider) findDnsmasqRecord(domain string) (*DNSRecord, error) {
 	host := domain[:strings.IndexByte(domain, '.')]
 	zone := domain[strings.IndexByte(domain, '.')+1:]
+
+	if p.debug {
+		p.logger.Debug("searching dnsmasq records",
+			zap.String("host", host),
+			zap.String("zone", zone))
+	}
 
 	resp, err := p.apiCall("dnsmasq/settings/search_host", nil)
 	if err != nil {
@@ -301,8 +408,18 @@ func (p *OPNsenseProvider) findDnsmasqRecord(domain string) (*DNSRecord, error) 
 		return nil, err
 	}
 
+	if p.debug {
+		p.logger.Debug("found dnsmasq records", zap.Int("count", len(data.Rows)))
+	}
+
 	for _, row := range data.Rows {
 		if row.Host == host && row.Domain == zone {
+			if p.debug {
+				p.logger.Debug("found matching dnsmasq record",
+					zap.String("domain", domain),
+					zap.String("uuid", row.UUID),
+					zap.String("ip", row.IP))
+			}
 			return &DNSRecord{
 				Domain:      domain,
 				IP:          row.IP,
@@ -314,6 +431,9 @@ func (p *OPNsenseProvider) findDnsmasqRecord(domain string) (*DNSRecord, error) 
 		}
 	}
 
+	if p.debug {
+		p.logger.Debug("no matching dnsmasq record found", zap.String("domain", domain))
+	}
 	return nil, nil
 }
 
@@ -323,6 +443,10 @@ func (p *OPNsenseProvider) reconfigure() error {
 		endpoint = "dnsmasq/service/reconfigure"
 	} else {
 		endpoint = "unbound/service/reconfigure"
+	}
+
+	if p.debug {
+		p.logger.Debug("reconfiguring DNS service", zap.String("service", p.dnsProvider))
 	}
 
 	resp, err := p.apiCall(endpoint, nil)
@@ -338,16 +462,31 @@ func (p *OPNsenseProvider) reconfigure() error {
 	if res.Status != "ok" {
 		return fmt.Errorf("reconfigure failed: %s", string(resp))
 	}
+
+	if p.debug {
+		p.logger.Debug("DNS service reconfigured successfully", zap.String("service", p.dnsProvider))
+	}
 	return nil
 }
 
 func (p *OPNsenseProvider) apiCall(endpoint string, payload any) ([]byte, error) {
 	// endpoint already includes the full path like "dnsmasq/settings/add_host" or "unbound/settings/add_host_override"
 	url := fmt.Sprintf("https://%s/api/%s", p.hostname, endpoint)
+
+	if p.debug {
+		p.logger.Debug("making API call",
+			zap.String("url", url),
+			zap.String("endpoint", endpoint),
+			zap.Bool("has_payload", payload != nil))
+	}
+
 	var body io.Reader
 	if payload != nil {
 		data, _ := json.Marshal(payload)
 		body = strings.NewReader(string(data))
+		if p.debug {
+			p.logger.Debug("API call payload", zap.String("payload", string(data)))
+		}
 	}
 	req, err := http.NewRequest("POST", url, body)
 	if err != nil {
@@ -359,6 +498,13 @@ func (p *OPNsenseProvider) apiCall(endpoint string, payload any) ([]byte, error)
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
+		if p.debug {
+			p.logger.Debug("API call failed", zap.Error(err))
+		}
+		// Check for common SSL errors like in the shell script
+		if strings.Contains(err.Error(), "certificate") || strings.Contains(err.Error(), "tls") {
+			return nil, fmt.Errorf("SSL/TLS error connecting to OPNsense API. If using self-signed certificates, enable 'insecure' option: %w", err)
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -366,6 +512,13 @@ func (p *OPNsenseProvider) apiCall(endpoint string, payload any) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
+
+	if p.debug {
+		p.logger.Debug("API call response",
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("response", string(out)))
+	}
+
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("api error %d: %s", resp.StatusCode, string(out))
 	}
