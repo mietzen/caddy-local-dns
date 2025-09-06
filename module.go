@@ -60,7 +60,7 @@ func (a *App) Provision(ctx caddy.Context) error {
 	a.logger = ctx.Logger(a)
 	a.clients = make(map[string]provider.DNSService)
 
-	// Validate global caddy_ip if provided
+	// Validate global caddy_ip
 	if a.CaddyIP != "" {
 		if net.ParseIP(a.CaddyIP) == nil {
 			return fmt.Errorf("invalid caddy_ip address: %s", a.CaddyIP)
