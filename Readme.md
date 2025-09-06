@@ -11,7 +11,7 @@ A Caddy module that automatically creates DNS records in your local DNS server w
 Build Caddy with this module:
 
 ```bash
-xcaddy build --with github.com/your-username/caddy-local-dns
+xcaddy build --with github.com/mietzen/caddy-local-dns
 ```
 
 ## Configuration
