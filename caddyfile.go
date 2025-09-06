@@ -10,8 +10,9 @@ import (
 func init() {
 	// Register global app
 	httpcaddyfile.RegisterGlobalOption("local_dns", parseApp)
-	// Register site directive
+	// Register site directive - specify order
 	httpcaddyfile.RegisterHandlerDirective("local_dns", parseHandler)
+	httpcaddyfile.RegisterDirectiveOrder("local_dns", httpcaddyfile.Before, "reverse_proxy")
 }
 
 // parseApp configures the "local_dns" global option from Caddyfile.
