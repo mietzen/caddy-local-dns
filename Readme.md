@@ -4,7 +4,7 @@ A Caddy module that automatically creates DNS records in your local DNS server w
 
 ## Supported Providers
 
-- **OPNsense** (Unbound DNS)
+- **OPNsense** (Unbound DNS or Dnsmasq)
 
 ## Installation
 
