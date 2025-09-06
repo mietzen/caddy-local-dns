@@ -14,8 +14,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// DNSProvider interface for different DNS backends
-type DNSProvider interface {
+// DNSService interface for different DNS backends
+type DNSService interface {
 	CreateRecord(domain, ip string) error
 	DeleteRecord(domain string) error
 	UpdateRecord(domain, ip string) error
@@ -32,15 +32,15 @@ type DNSRecord struct {
 	Description string
 }
 
-// OPNsenseProvider implements DNSProvider for OPNsense
+// OPNsenseProvider implements DNSService for OPNsense
 type OPNsenseProvider struct {
-	hostname    string
-	apiKey      string
-	apiSecret   string
-	dnsProvider string
-	client      *http.Client
-	logger      *zap.Logger
-	debug       bool
+	hostname   string
+	apiKey     string
+	apiSecret  string
+	dnsService string
+	client     *http.Client
+	logger     *zap.Logger
+	debug      bool
 }
 
 type opnsenseOverride struct {
@@ -65,19 +65,19 @@ type dnsmasqHost struct {
 }
 
 // NewOPNsenseProvider creates a new OPNsense provider
-func NewOPNsenseProvider(hostname, apiKey, apiSecret, dnsProvider string, insecure bool, logger *zap.Logger, debug bool) (*OPNsenseProvider, error) {
+func NewOPNsenseProvider(hostname, apiKey, apiSecret, dnsService string, insecure bool, logger *zap.Logger, debug bool) (*OPNsenseProvider, error) {
 	if hostname == "" || apiKey == "" || apiSecret == "" {
 		return nil, errors.New("opnsense provider requires hostname, api_key, and api_secret")
 	}
 
-	// Default to unbound if dns_provider not specified
-	if dnsProvider == "" {
-		dnsProvider = "unbound"
+	// Default to unbound if dns_service not specified
+	if dnsService == "" {
+		dnsService = "unbound"
 	}
 
-	// Validate dns_provider
-	if dnsProvider != "unbound" && dnsProvider != "dnsmasq" {
-		return nil, fmt.Errorf("unsupported dns_provider: %s (must be 'unbound' or 'dnsmasq')", dnsProvider)
+	// Validate dns_service
+	if dnsService != "unbound" && dnsService != "dnsmasq" {
+		return nil, fmt.Errorf("unsupported dns_service: %s (must be 'unbound' or 'dnsmasq')", dnsService)
 	}
 
 	tr := &http.Transport{}
@@ -98,18 +98,18 @@ func NewOPNsenseProvider(hostname, apiKey, apiSecret, dnsProvider string, insecu
 	if debug {
 		logger.Debug("OPNsense provider created",
 			zap.String("hostname", hostname),
-			zap.String("dns_provider", dnsProvider),
+			zap.String("dns_service", dnsService),
 			zap.Bool("insecure", insecure))
 	}
 
 	return &OPNsenseProvider{
-		hostname:    hostname,
-		apiKey:      apiKey,
-		apiSecret:   apiSecret,
-		dnsProvider: dnsProvider,
-		client:      client,
-		logger:      logger,
-		debug:       debug,
+		hostname:   hostname,
+		apiKey:     apiKey,
+		apiSecret:  apiSecret,
+		dnsService: dnsService,
+		client:     client,
+		logger:     logger,
+		debug:      debug,
 	}, nil
 }
 
@@ -122,10 +122,10 @@ func (p *OPNsenseProvider) CreateRecord(domain, ip string) error {
 		p.logger.Debug("creating DNS record",
 			zap.String("domain", domain),
 			zap.String("ip", ip),
-			zap.String("provider_type", p.dnsProvider))
+			zap.String("provider_type", p.dnsService))
 	}
 
-	if p.dnsProvider == "dnsmasq" {
+	if p.dnsService == "dnsmasq" {
 		return p.createDnsmasqRecord(domain, ip)
 	}
 
@@ -282,7 +282,7 @@ func (p *OPNsenseProvider) DeleteRecord(domain string) error {
 	}
 
 	var endpoint string
-	if p.dnsProvider == "dnsmasq" {
+	if p.dnsService == "dnsmasq" {
 		endpoint = "dnsmasq/settings/del_domain/" + existing.UUID
 	} else {
 		endpoint = "unbound/settings/del_host_override/" + existing.UUID
@@ -318,10 +318,10 @@ func (p *OPNsenseProvider) FindRecord(domain string) (*DNSRecord, error) {
 	if p.debug {
 		p.logger.Debug("searching for DNS record",
 			zap.String("domain", domain),
-			zap.String("provider_type", p.dnsProvider))
+			zap.String("provider_type", p.dnsService))
 	}
 
-	if p.dnsProvider == "dnsmasq" {
+	if p.dnsService == "dnsmasq" {
 		return p.findDnsmasqRecord(domain)
 	}
 
@@ -439,14 +439,14 @@ func (p *OPNsenseProvider) findDnsmasqRecord(domain string) (*DNSRecord, error) 
 
 func (p *OPNsenseProvider) reconfigure() error {
 	var endpoint string
-	if p.dnsProvider == "dnsmasq" {
+	if p.dnsService == "dnsmasq" {
 		endpoint = "dnsmasq/service/reconfigure"
 	} else {
 		endpoint = "unbound/service/reconfigure"
 	}
 
 	if p.debug {
-		p.logger.Debug("reconfiguring DNS service", zap.String("service", p.dnsProvider))
+		p.logger.Debug("reconfiguring DNS service", zap.String("service", p.dnsService))
 	}
 
 	resp, err := p.apiCall(endpoint, nil)
@@ -464,7 +464,7 @@ func (p *OPNsenseProvider) reconfigure() error {
 	}
 
 	if p.debug {
-		p.logger.Debug("DNS service reconfigured successfully", zap.String("service", p.dnsProvider))
+		p.logger.Debug("DNS service reconfigured successfully", zap.String("service", p.dnsService))
 	}
 	return nil
 }
@@ -526,4 +526,4 @@ func (p *OPNsenseProvider) apiCall(endpoint string, payload any) ([]byte, error)
 }
 
 // Interface compliance
-var _ DNSProvider = (*OPNsenseProvider)(nil)
+var _ DNSService = (*OPNsenseProvider)(nil)

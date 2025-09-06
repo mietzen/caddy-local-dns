@@ -26,17 +26,17 @@ type App struct {
 	Debug     bool                       `json:"debug,omitempty"`
 
 	logger  *zap.Logger
-	clients map[string]provider.DNSProvider
+	clients map[string]provider.DNSService
 }
 
 // ProviderConfig holds the configuration for a DNS provider
 type ProviderConfig struct {
-	Type        string `json:"type"` // "opnsense", "pihole", etc.
-	Hostname    string `json:"hostname,omitempty"`
-	APIKey      string `json:"api_key,omitempty"`
-	APISecret   string `json:"api_secret,omitempty"`
-	DNSProvider string `json:"localdns_provider,omitempty"` // "unbound", "dnsmasq", etc.
-	Insecure    bool   `json:"insecure,omitempty"`
+	Type       string `json:"type"` // "opnsense", "pihole", etc.
+	Hostname   string `json:"hostname,omitempty"`
+	APIKey     string `json:"api_key,omitempty"`
+	APISecret  string `json:"api_secret,omitempty"`
+	DNSService string `json:"dns_service,omitempty"` // "unbound", "dnsmasq", etc.
+	Insecure   bool   `json:"insecure,omitempty"`
 }
 
 // Handler is the HTTP handler that processes individual site configurations
@@ -58,7 +58,7 @@ func (App) CaddyModule() caddy.ModuleInfo {
 
 func (a *App) Provision(ctx caddy.Context) error {
 	a.logger = ctx.Logger(a)
-	a.clients = make(map[string]provider.DNSProvider)
+	a.clients = make(map[string]provider.DNSService)
 
 	// Validate global caddy_ip if provided
 	if a.CaddyIP != "" {
@@ -83,7 +83,7 @@ func (a *App) Provision(ctx caddy.Context) error {
 		if a.Debug {
 			fields = append(fields,
 				zap.String("hostname", config.Hostname),
-				zap.String("dns_provider", config.DNSProvider),
+				zap.String("dns_service", config.DNSService),
 				zap.Bool("insecure", config.Insecure),
 			)
 		}
@@ -101,10 +101,10 @@ func (a *App) Stop() error {
 	return nil
 }
 
-func (a *App) createProvider(config *ProviderConfig) (provider.DNSProvider, error) {
+func (a *App) createProvider(config *ProviderConfig) (provider.DNSService, error) {
 	switch config.Type {
 	case "opnsense":
-		return provider.NewOPNsenseProvider(config.Hostname, config.APIKey, config.APISecret, config.DNSProvider, config.Insecure, a.logger, a.Debug)
+		return provider.NewOPNsenseProvider(config.Hostname, config.APIKey, config.APISecret, config.DNSService, config.Insecure, a.logger, a.Debug)
 	default:
 		return nil, fmt.Errorf("unsupported provider type: %s", config.Type)
 	}
@@ -240,8 +240,8 @@ func (a *App) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 						if !d.AllArgs(&config.APISecret) {
 							return d.ArgErr()
 						}
-					case "localdns_provider":
-						if !d.AllArgs(&config.DNSProvider) {
+					case "dns_service":
+						if !d.AllArgs(&config.DNSService) {
 							return d.ArgErr()
 						}
 					case "insecure":
